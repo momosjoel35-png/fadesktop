@@ -1,0 +1,417 @@
+# ---------------------------------------------------------------------------
+# Build de Windows SOLO para este fork (momosjoel35-png/fadesktop).
+# Copia recortada de build-win-x64.yml:
+#   - sin el paso 'Clone DesktopPrivate' (el repo privado NO lo usa el build de
+#     Windows; solo Telegram/build/build.sh y updates.sh en Linux/macOS, y hace
+#     falta un PAT que este fork no tiene)
+#   - sin los jobs build-installer / upload-telegram (basta el zip portable)
+#   - sin firma/subida OTA (no publicamos updates de FAgram)
+# El parche de self-destruct vive en el codigo (commits 5d48a8f, 651d000).
+# ---------------------------------------------------------------------------
+name: Build Fork Windows x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      tagname:
+        description: "tagname"
+        type: string
+        required: true
+      build_type:
+        description: "Build type"
+        type: choice
+        required: true
+        default: "ci"
+        options:
+          - ci
+          - rel
+      dirty_build:
+        description: "Enable dirty build (cache out dir)"
+        type: boolean
+        required: false
+        default: false
+      disable_cache:
+        description: "Skip restore cache (rebuild from source)"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  prepare-libraries:
+    name: Prepare Libraries
+    runs-on: windows-latest
+
+    env:
+      PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Prepare directories
+        run: |
+          if exist D:\ (
+            mkdir D:\TBuild\Libraries
+            mkdir D:\TBuild\ThirdParty
+            mklink /d %GITHUB_WORKSPACE%\TBuild D:\TBuild
+          ) else (
+            mkdir %userprofile%\TBuild\Libraries
+            mkdir %userprofile%\TBuild\ThirdParty
+            mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          )
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+
+      - name: Get repository name
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Clone repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: Free disk space
+        shell: pwsh
+        run: pwsh -File "$env:TBUILD/$env:REPO_NAME/.github/scripts/free_disk_space_win.ps1"
+
+      - name: Set up pagefile
+        shell: pwsh
+        run: pwsh -File "$env:TBUILD/$env:REPO_NAME/.github/scripts/set_pagefile_win.ps1" -Size 16gb -Drive "C:"
+
+      - name: Set up environment paths
+        shell: bash
+        run: |
+          DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
+          SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> $GITHUB_ENV
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
+
+          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+          git config --global user.email "you@example.com"
+          git config --global user.name "Sample"
+
+      - name: ThirdParty cache (Restore)
+        if: ${{ inputs.disable_cache != true && inputs.disable_cache != 'true' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.os }}-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-third-party-${{ env.CACHE_KEY }}-
+
+      - name: Libraries cache (Restore)
+        if: ${{ inputs.disable_cache != true && inputs.disable_cache != 'true' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-libs-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-libs-${{ env.CACHE_KEY }}-
+
+      - name: Qt cache (Restore)
+        if: ${{ inputs.disable_cache != true && inputs.disable_cache != 'true' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\Qt*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-qt-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-qt-${{ env.CACHE_KEY }}-
+
+      - name: Heal stale cache keys
+        shell: bash
+        run: |
+          if [ -d "$LibrariesPath/cache_keys" ]; then
+            if ! ls "$LibrariesPath"/Qt-* 1> /dev/null 2>&1; then
+              rm -f "$LibrariesPath"/cache_keys/[qQ]t*
+              echo "Qt missing, dropped its cache key"
+            fi
+          fi
+
+      - uses: Eden-CI/msvc-dev-cmd@master
+        name: Native Tools Command Prompt
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: 14.44
+
+      - name: NuGet sources
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: Prepare Libraries
+        run: |
+          cd %TBUILD%
+          %REPO_NAME%\Telegram\build\prepare\win.bat silent
+
+      - name: Clean up build intermediates
+        shell: bash
+        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' -o -path '*/Qt-*/*' ')' -type f ')' -o -empty ')' -delete || true
+
+      - name: ThirdParty cache (Save)
+        if: ${{ always() && (inputs.disable_cache != true && inputs.disable_cache != 'true') }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.os }}-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+
+      - name: Libraries cache (Save)
+        if: ${{ always() && (inputs.disable_cache != true && inputs.disable_cache != 'true') }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-libs-${{ env.CACHE_KEY }}-${{ github.run_id }}
+
+      - name: Qt cache (Save)
+        if: ${{ always() && (inputs.disable_cache != true && inputs.disable_cache != 'true') }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\Qt*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-qt-${{ env.CACHE_KEY }}-${{ github.run_id }}
+
+  build-fagram:
+    name: Build FAgram Desktop
+    runs-on: windows-latest
+    needs: prepare-libraries
+    if: ${{ !cancelled() && (needs.prepare-libraries.result == 'success' || needs.prepare-libraries.result == 'skipped') }}
+
+    outputs:
+      app_version_str: ${{ steps.version.outputs.app_version_str }}
+      app_version_str_small: ${{ steps.version.outputs.app_version_str_small }}
+      app_version_str_full: ${{ steps.version.outputs.app_version_str_full }}
+
+    env:
+      UPLOAD_ARTIFACT: "true"
+      PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+      PreferredToolArchitecture: "x64"
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Prepare directories
+        run: |
+          if exist D:\ (
+            mkdir D:\TBuild\Libraries
+            mkdir D:\TBuild\ThirdParty
+            mklink /d %GITHUB_WORKSPACE%\TBuild D:\TBuild
+          ) else (
+            mkdir %userprofile%\TBuild\Libraries
+            mkdir %userprofile%\TBuild\ThirdParty
+            mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          )
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+
+      - name: Get repository name
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Clone repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: Free disk space
+        shell: pwsh
+        run: pwsh -File "$env:TBUILD/$env:REPO_NAME/.github/scripts/free_disk_space_win.ps1"
+
+      - name: Set up pagefile
+        shell: pwsh
+        run: pwsh -File "$env:TBUILD/$env:REPO_NAME/.github/scripts/set_pagefile_win.ps1" -Size 16gb -Drive "C:"
+
+      - name: Set up environment paths
+        shell: bash
+        run: |
+          DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
+          SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> $GITHUB_ENV
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
+
+          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+      - uses: Eden-CI/msvc-dev-cmd@master
+        name: Native Tools Command Prompt
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: 14.44
+
+      - name: ThirdParty cache (Restore)
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.os }}-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-third-party-${{ env.CACHE_KEY }}-
+
+      - name: Libraries cache (Restore)
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-libs-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-libs-${{ env.CACHE_KEY }}-
+
+      - name: Qt cache (Restore)
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\Qt*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-qt-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-qt-${{ env.CACHE_KEY }}-
+
+      - name: Heal stale cache keys
+        shell: bash
+        run: |
+          if [ -d "$LibrariesPath/cache_keys" ]; then
+            if ! ls "$LibrariesPath"/Qt-* 1> /dev/null 2>&1; then
+              rm -f "$LibrariesPath"/cache_keys/[qQ]t*
+              echo "Qt missing, dropped its cache key"
+            fi
+          fi
+
+      - name: Build tree cache (Restore)
+        if: ${{ (inputs.dirty_build == true || inputs.dirty_build == 'true') && inputs.disable_cache != true && inputs.disable_cache != 'true' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
+          key: ${{ runner.os }}-out-minsizerel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-out-minsizerel-${{ env.CACHE_KEY }}-
+
+      - name: Build Configuration
+        shell: bash
+        run: |
+          echo "TDESKTOP_BUILD_ARCH=x64" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=FAgram_Win-x64" >> $GITHUB_ENV
+
+          API="-D TDESKTOP_API_ID=${{ secrets.API_ID_CONFIG }} -D TDESKTOP_API_HASH=${{ secrets.API_HASH_CONFIG }} -D TDESKTOP_LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}"
+          echo "TDESKTOP_BUILD_API=$API" >> $GITHUB_ENV
+
+      - name: Ensure beta version for CI build
+        if: ${{ inputs.build_type == 'ci' }}
+        shell: bash
+        run: |
+          python3 "$TBUILD/$REPO_NAME/Telegram/build/ensure_beta.py"
+
+      - name: Build FAgram Desktop
+        run: |
+          cd %TBUILD%\%REPO_NAME%\Telegram
+          
+          set "CFG_FLAGS=%TDESKTOP_BUILD_ARCH% %TDESKTOP_BUILD_API%"
+          set "CFG_MARKER=..\out\.ci_configure_flags"
+          set "REUSE_TREE=0"
+          if exist ..\out\CMakeCache.txt if exist "%CFG_MARKER%" (
+            for /f "usebackq delims=" %%a in ("%CFG_MARKER%") do (
+              if "%%a"=="%CFG_FLAGS%" set "REUSE_TREE=1"
+            )
+          )
+          if "%REUSE_TREE%"=="1" (
+            echo Reusing the configured build tree.
+            goto :build
+          )
+          echo Configuring the build tree.
+
+          call configure.bat ^
+          %TDESKTOP_BUILD_ARCH% ^
+          %TDESKTOP_BUILD_API% ^
+          -D CMAKE_C_FLAGS="/WX-" ^
+          -D CMAKE_CXX_FLAGS="/WX-" ^
+          -D CMAKE_CONFIGURATION_TYPES=MinSizeRel ^
+          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
+          -D DESKTOP_APP_BUILD_PACKER=ON || exit /b 1
+
+          > "%CFG_MARKER%" echo %CFG_FLAGS%
+
+          :build
+          cmake --build ..\out --config MinSizeRel --parallel 2 || exit /b 1
+
+      - name: Build tree cache (Save)
+        if: >
+          always() &&
+          (inputs.dirty_build == true || inputs.dirty_build == 'true') &&
+          inputs.disable_cache != true &&
+          inputs.disable_cache != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
+          key: ${{ runner.os }}-out-minsizerel-${{ env.CACHE_KEY }}-${{ github.run_id }}
+
+
+      - name: Get tag name
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tagname }}" ]; then
+            echo "RELEASE_TAG=${{ inputs.tagname }}" >> $GITHUB_ENV
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "RELEASE_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Read version info
+        id: version
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: bash
+        run: |
+          VERSION_FILE="$TBUILD/$REPO_NAME/Telegram/build/version"
+          APP_VERSION=$(grep 'AppVersion ' "$VERSION_FILE" | awk '{print $2}')
+          APP_VERSION_STR=$(grep 'AppVersionStr ' "$VERSION_FILE" | awk '{print $2}')
+          APP_VERSION_STR_SMALL=$(grep 'AppVersionStrSmall' "$VERSION_FILE" | awk '{print $2}')
+          IS_BETA=$(grep 'BetaChannel' "$VERSION_FILE" | awk '{print $2}')
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+          echo "APP_VERSION_STR=$APP_VERSION_STR" >> $GITHUB_ENV
+          echo "APP_VERSION_STR_SMALL=$APP_VERSION_STR_SMALL" >> $GITHUB_ENV
+          echo "APP_VERSION_STR_FULL=${APP_VERSION_STR}.0" >> $GITHUB_ENV
+          echo "IS_BETA=$IS_BETA" >> $GITHUB_ENV
+          echo "app_version=$APP_VERSION" >> $GITHUB_OUTPUT
+          echo "app_version_str=$APP_VERSION_STR" >> $GITHUB_OUTPUT
+          echo "app_version_str_small=$APP_VERSION_STR_SMALL" >> $GITHUB_OUTPUT
+          echo "app_version_str_full=${APP_VERSION_STR}.0" >> $GITHUB_OUTPUT
+
+      - name: Prepare artifacts
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          cd %TBUILD%\%REPO_NAME%
+          set OUT=%TBUILD%\%REPO_NAME%\out\MinSizeRel
+          if not exist artifact mkdir artifact
+          move %OUT%\fagram.exe artifact\
+          move %OUT%\Updater.exe artifact\
+          copy Telegram\Resources\art\icon.ico artifact\
+          cd artifact
+          7z a -tzip FAgram_Win-x64_%RELEASE_TAG%_portable.zip *.exe icon.ico
+
+      - uses: actions/upload-artifact@v7
+        name: Upload Release Artifacts
+        if: env.UPLOAD_ARTIFACT == 'true'
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.TBUILD }}/${{ env.REPO_NAME }}/artifact/
+
