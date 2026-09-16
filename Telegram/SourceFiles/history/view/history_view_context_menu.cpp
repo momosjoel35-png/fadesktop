@@ -104,6 +104,7 @@ https://github.com/fagramdesktop/fadesktop/blob/dev/LEGAL
 #include "core/click_handler_types.h"
 #include "base/platform/base_platform_info.h"
 #include "base/call_delayed.h"
+#include "base/timer_rpl.h"
 #include "settings/sections/settings_premium.h"
 #include "window/window_peer_menu.h"
 #include "window/window_controller.h"
@@ -128,12 +129,15 @@ https://github.com/fagramdesktop/fadesktop/blob/dev/LEGAL
 #include <QtGui/QClipboard>
 #include <QtWidgets/QMenu>
 
+#include <rpl/rpl.h>
+
 namespace HistoryView {
 namespace {
 
 constexpr auto kRescheduleLimit = 20;
 constexpr auto kTagNameLimit = 12;
 constexpr auto kPublicPostLinkToastDuration = 4 * crl::time(1000);
+constexpr auto kSavePhotoLoadingPoll = crl::time(250);
 
 class RevertAction final : public Ui::Menu::ItemBase {
 public:
@@ -329,9 +333,36 @@ bool HasEditMessageAction(
 	return true;
 }
 
+void WithLoadedPhoto(
+		not_null<PhotoData*> photo,
+		FullMsgId contextId,
+		Fn<void()> done) {
+	const auto media = photo->activeMediaView();
+	if (photo->isNull() || !media) {
+		return;
+	} else if (media->loaded()) {
+		done();
+		return;
+	}
+	photo->clearFailed(Data::PhotoSize::Large);
+	photo->load(Data::PhotoSize::Large, contextId);
+	const auto session = &photo->session();
+	rpl::merge(
+		session->downloaderTaskFinished(),
+		base::timer_each(kSavePhotoLoadingPoll)
+	) | rpl::filter([=] {
+		return media->loaded()
+			|| photo->failed(Data::PhotoSize::Large);
+	}) | rpl::take(1) | rpl::on_next([=] {
+		if (media->loaded()) {
+			done();
+		}
+	}, session->lifetime());
+}
+
 void SavePhotoToFile(not_null<PhotoData*> photo) {
 	const auto media = photo->activeMediaView();
-	if (photo->isNull() || !media || !media->loaded()) {
+	if (photo->isNull() || !media) {
 		return;
 	}
 
@@ -384,13 +415,19 @@ void AddPhotoActions(
 				base::fn_delayed(
 					st::defaultDropdownMenu.menu.ripple.hideDuration,
 					&photo->session(),
-					[=] { SavePhotoToFile(photo); }),
+					[=] {
+						WithLoadedPhoto(photo, contextId, [=] {
+							SavePhotoToFile(photo);
+						});
+					}),
 				&st::menuIconSaveImage);
 		}
 		menu->addAction(tr::lng_context_copy_image(tr::now), [=] {
 			const auto item = photo->owner().message(contextId);
 			if (!list->showCopyMediaRestriction(item)) {
-				CopyImage(photo);
+				WithLoadedPhoto(photo, contextId, [=] {
+					CopyImage(photo);
+				});
 			}
 		}, &st::menuIconCopy);
 	}

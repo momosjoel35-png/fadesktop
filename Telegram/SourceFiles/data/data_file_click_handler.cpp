@@ -80,7 +80,7 @@ void DocumentSaveClickHandler::Save(
 		return;
 	}
 
-	if (data->forbidsFileSave()) {
+	if (data->forbidsFileSave() && mode != Mode::ToNewFile) {
 		return;
 	}
 	auto savename = QString();
