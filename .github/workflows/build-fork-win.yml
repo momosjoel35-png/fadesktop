@@ -1,9 +1,10 @@
 # ---------------------------------------------------------------------------
 # Build de Windows SOLO para este fork (momosjoel35-png/fadesktop).
 # Copia recortada de build-win-x64.yml:
-#   - sin el paso 'Clone DesktopPrivate' (el repo privado NO lo usa el build de
-#     Windows; solo Telegram/build/build.sh y updates.sh en Linux/macOS, y hace
-#     falta un PAT que este fork no tiene)
+#   - sin el paso 'Clone DesktopPrivate' (hace falta un PAT que este fork no
+#     tiene): el target Packer se compila con -DPACKER_DISABLE_PRIVATE, la
+#     salida que el propio fork trae en _other/packer.cpp. Queda sin llaves
+#     privadas de firma, que no usamos (no publicamos updates OTA)
 #   - sin los jobs build-installer / upload-telegram (basta el zip portable)
 #   - sin firma/subida OTA (no publicamos updates de FAgram)
 # El parche de self-destruct vive en el codigo (commits 5d48a8f, 651d000).
@@ -340,7 +341,7 @@ jobs:
           %TDESKTOP_BUILD_ARCH% ^
           %TDESKTOP_BUILD_API% ^
           -D CMAKE_C_FLAGS="/WX-" ^
-          -D CMAKE_CXX_FLAGS="/WX-" ^
+          -D CMAKE_CXX_FLAGS="/WX- -DPACKER_DISABLE_PRIVATE" ^
           -D CMAKE_CONFIGURATION_TYPES=MinSizeRel ^
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
