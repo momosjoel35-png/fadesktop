@@ -92,6 +92,7 @@ https://github.com/fagramdesktop/fadesktop/blob/dev/LEGAL
 #include "base/qt/qt_key_modifiers.h"
 #include "base/unixtime.h"
 #include "base/call_delayed.h"
+#include "base/timer_rpl.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
@@ -142,6 +143,8 @@ https://github.com/fagramdesktop/fadesktop/blob/dev/LEGAL
 #include "styles/style_menu_icons.h"
 #include "styles/style_window.h"
 #include "styles/style_fa_styles.h"
+
+#include <rpl/rpl.h>
 
 #include <QtGui/QClipboard>
 #include <QtWidgets/QApplication>
@@ -3135,7 +3138,12 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 	const auto addPhotoActions = [&, hasShortcutSaveFile](not_null<PhotoData*> photo, HistoryItem *item) {
 		const auto media = photo->activeMediaView();
 		const auto itemId = item ? item->fullId() : FullMsgId();
-		if (!photo->isNull() && media && media->loaded() && !hasCopyMediaRestriction(item)) {
+		const auto itemMedia = item ? item->media() : nullptr;
+		const auto selfDestructs = itemMedia && itemMedia->ttlSeconds() > 0;
+		if (!photo->isNull()
+			&& media
+			&& (media->loaded() || selfDestructs)
+			&& !hasCopyMediaRestriction(item)) {
 			// Skip save image if already in shortcuts
 			if (!hasShortcutSaveFile) {
 				_menu->addAction(tr::lng_context_save_image(tr::now), base::fn_delayed(st::defaultDropdownMenu.menu.ripple.hideDuration, this, [=] {
@@ -3188,8 +3196,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			}, &st::menuIconShowInFolder);
 		}
 		if (item
-			&& !hasCopyMediaRestriction(item)
-			&& !HistoryView::ItemHasTtl(item)) {
+			&& !hasCopyMediaRestriction(item)) {
 			HistoryView::AddSaveSoundForNotifications(
 				_menu,
 				item,
@@ -3552,7 +3559,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		if (!selectedState.count) {
 			if (lnkPhoto) {
 				addPhotoActions(lnkPhoto, item);
-			} else {
+			} else if (lnkDocument) {
 				addDocumentActions(lnkDocument, item);
 			}
 		}
@@ -3878,6 +3885,18 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			if (item && !isUponSelected) {
 				const auto media = (view ? view->media() : nullptr);
 				const auto mediaHasTextForCopy = media && media->hasTextForCopy();
+				// FAgram: self-destructing media can be saved straight from
+				// the message menu, without opening it first.
+				if (media
+					&& item->media()
+					&& item->media()->ttlSeconds() > 0
+					&& !hasCopyMediaRestriction(item)) {
+					if (const auto photo = media->getPhoto()) {
+						addPhotoActions(photo, item);
+					} else if (const auto document = media->getDocument()) {
+						addDocumentActions(document, item);
+					}
+				}
 				if (const auto document = media ? media->getDocument() : nullptr) {
 					if (!view->isIsolatedEmoji() && document->sticker()) {
 						const auto sending = item->isSending();
@@ -4460,6 +4479,11 @@ bool HistoryInner::hasCopyRestriction(HistoryItem *item) const {
 
 bool HistoryInner::hasCopyMediaRestriction(
 		not_null<HistoryItem*> item) const {
+	if (const auto media = item->media(); media && media->ttlSeconds() > 0) {
+		// FAgram: self-destructing media stays saveable from the chat menu,
+		// even before it is opened.
+		return false;
+	}
 	return hasCopyRestriction(item) || item->forbidsSaving();
 }
 
@@ -4536,7 +4560,27 @@ void HistoryInner::editCaptionUploadLayer(not_null<HistoryItem*> item) {
 
 void HistoryInner::savePhotoToFile(not_null<PhotoData*> photo) {
 	const auto media = photo->activeMediaView();
-	if (photo->isNull() || !media || !media->loaded()) {
+	if (photo->isNull() || !media) {
+		return;
+	}
+	if (!media->loaded()) {
+		// FAgram: self-destructing photos are cached as a small preview
+		// only, so fetch the full size before writing it out.
+		photo->clearFailed(Data::PhotoSize::Large);
+		photo->load(Data::PhotoSize::Large, FullMsgId());
+		const auto session = &photo->session();
+		const auto weak = base::make_weak(this);
+		rpl::merge(
+			session->downloaderTaskFinished(),
+			base::timer_each(crl::time(250))
+		) | rpl::filter([=] {
+			return media->loaded()
+				|| photo->failed(Data::PhotoSize::Large);
+		}) | rpl::take(1) | rpl::on_next([=] {
+			if (const auto strong = weak.get(); strong && media->loaded()) {
+				strong->savePhotoToFile(photo);
+			}
+		}, session->lifetime());
 		return;
 	}
 
