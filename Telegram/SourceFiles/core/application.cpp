@@ -315,9 +315,9 @@ void Application::run() {
 	_notifications = std::make_unique<Window::Notifications::System>();
 
 	startLocalStorage();
-	if (FASettings::FASettings::getInstance().disableAutoUpdate()) {
-		cSetAutoUpdate(false);
-	}
+
+	// FAgram: the patched fork never updates itself away from its own changes.
+	cSetAutoUpdate(false);
 
 	FAlang::Load(Lang::GetInstance().baseId(), Lang::GetInstance().id());
 

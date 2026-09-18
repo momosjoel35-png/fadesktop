@@ -271,7 +271,7 @@ private:
 	rpl::variable<bool> _disableAi = false;
 	rpl::variable<bool> _disableAnimatedAvatars = false;
 	rpl::variable<bool> _disableAutoDownload = false;
-	rpl::variable<bool> _disableAutoUpdate = false;
+	rpl::variable<bool> _disableAutoUpdate = true;
 	rpl::variable<bool> _showStartToken = true;
 	rpl::variable<bool> _showPeerId = true;
 	rpl::variable<bool> _showDcId = true;
