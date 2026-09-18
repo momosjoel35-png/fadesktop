@@ -310,7 +310,7 @@ jobs:
           echo "TDESKTOP_BUILD_ARCH=x64" >> $GITHUB_ENV
           echo "ARTIFACT_NAME=FAgram_Win-x64" >> $GITHUB_ENV
 
-          API="-D TDESKTOP_API_ID=${{ secrets.API_ID_CONFIG }} -D TDESKTOP_API_HASH=${{ secrets.API_HASH_CONFIG }} -D TDESKTOP_LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}"
+          API="-D TDESKTOP_API_ID=${{ secrets.API_ID_CONFIG }} -D TDESKTOP_API_HASH=${{ secrets.API_HASH_CONFIG }} -D TDESKTOP_LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY || '0' }}"
           echo "TDESKTOP_BUILD_API=$API" >> $GITHUB_ENV
 
       - name: Ensure beta version for CI build
