@@ -6779,6 +6779,11 @@ CopyRestrictionType CopyRestrictionTypeFor(
 CopyRestrictionType CopyMediaRestrictionTypeFor(
 		not_null<PeerData*> peer,
 		not_null<HistoryItem*> item) {
+	if (const auto media = item->media(); media && media->ttlSeconds() > 0) {
+		// FAgram: self-destructing and view-once media stays saveable
+		// from the context menu, even before it is opened.
+		return CopyRestrictionType::None;
+	}
 	if (const auto all = CopyRestrictionTypeFor(peer, item)
 		; all != CopyRestrictionType::None) {
 		return all;

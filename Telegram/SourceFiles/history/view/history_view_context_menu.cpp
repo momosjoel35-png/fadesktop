@@ -1997,6 +1997,13 @@ void FillContextMenuItems(
 		if (const auto document = media ? media->getDocument() : nullptr) {
 			AddDocumentActions(result, document, view->data(), list, hasShortcutSaveFile);
 		}
+		if (const auto photo = media ? media->getPhoto() : nullptr) {
+			if (itemMedia && itemMedia->ttlSeconds() > 0) {
+				// FAgram: self-destructing photos show the save action
+				// without hovering the image itself.
+				AddPhotoActions(result, photo, view->data(), list, hasShortcutSaveFile);
+			}
+		}
 		if (!link && (view->hasVisibleText() || mediaHasTextForCopy)) {
 			// Skip copy text if already in shortcuts
 			if (!hasShortcutCopy && !list->hasCopyRestriction(view->data())) {
